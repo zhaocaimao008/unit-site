@@ -40,6 +40,14 @@ footer{padding:24px 16px;color:var(--muted);font-size:13px}
 def esc(s):
     return html.escape(str(s))
 
+def network_html(cfg):
+    """页脚"更多实用工具":同系列网站互相链接(列表见 config.json 的 network)。"""
+    sites = [s for s in cfg.get("network", []) if s["url"].rstrip("/") != cfg["base_url"].rstrip("/")]
+    if not sites:
+        return ""
+    return "<br>更多实用工具:" + " · ".join(f'<a href="{esc(s["url"])}">{esc(s["name"])}</a>' for s in sites)
+
+
 
 def fmt(x):
     """最多 10 位有效数字,去掉末尾 0,过大过小用科学计数法。"""
@@ -134,7 +142,7 @@ class Site:
 <link rel="canonical" href="{esc(cfg["base_url"].rstrip("/") + path)}">{ads}<style>{CSS}</style></head><body>
 <header><a class="logo" href="/">{esc(cfg["site_name"])}</a><nav>{nav}<a href="/daxie/">金额大写</a><a href="/bmi/">BMI</a></nav></header>
 <main>{body}</main>
-<footer>换算系数采用国际单位制及国家标准规定的定义值,计算结果最多保留 10 位有效数字,仅供参考。</footer>
+<footer>换算系数采用国际单位制及国家标准规定的定义值,计算结果最多保留 10 位有效数字,仅供参考。{network_html(cfg)}</footer>
 </body></html>""".replace('href="/', f'href="{prefix}/')
         f = OUT / path.strip("/") / "index.html"
         f.parent.mkdir(parents=True, exist_ok=True)
