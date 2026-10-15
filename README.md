@@ -11,6 +11,6 @@
 ## 本地测试
 
 ```bash
-python3 build.py && python3 build_en.py && python3 -m http.server -d dist
+python3 build.py && python3 build_en.py && python3 validate_seo.py && python3 -m http.server -d dist
 node -e "console.log(require('./rmb.js')('1234.56'))"
 ```

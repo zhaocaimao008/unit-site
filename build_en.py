@@ -9,7 +9,10 @@ import re
 import urllib.parse
 from fractions import Fraction as F
 
-from build import CSS, OUT, ROOT, esc, fmt
+from build import (
+    CSS, OUT, ROOT, breadcrumb_node, esc, faq_html, faq_node, fmt, guide_card, howto_card, howto_node,
+    jsonld_scripts, og_tags, webapp_node, website_node,
+)
 from units import CATEGORIES
 
 # 中文类别 -> (英文 slug, 英文名)
@@ -157,22 +160,42 @@ class En:
         return (f'<div class="ad"><ins class="adsbygoogle" style="display:block" data-ad-client="{esc(c)}" data-ad-format="auto" '
                 'data-full-width-responsive="true"></ins><script>(adsbygoogle=window.adsbygoogle||[]).push({});</script></div>')
 
-    def write(self, path, title, desc, body, zh=None):
+    def write(self, path, title, desc, body, zh=None, *, crumbs=None, faq=None, howto=None, home=False):
         ads = ""
         if self.cfg.get("adsense_client"):
             ads = (f'<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client='
                    f'{esc(self.cfg["adsense_client"])}" crossorigin="anonymous"></script>')
-        alt = ""
+        canon = self.base + path
+        # 有中文对应页时,x-default 指向中文页;只有英文版时指向本页。
+        alt = f'<link rel="alternate" hreflang="en" href="{esc(canon)}">'
         if zh:
             self.alt[path] = zh
-            alt = (f'<link rel="alternate" hreflang="en" href="{esc(self.base + path)}">'
-                   f'<link rel="alternate" hreflang="zh-CN" href="{esc(self.base + zh)}">'
-                   f'<link rel="alternate" hreflang="x-default" href="{esc(self.base + path)}">')
+            alt += (
+                f'<link rel="alternate" hreflang="zh-CN" href="{esc(self.base + zh)}">'
+                f'<link rel="alternate" hreflang="x-default" href="{esc(self.base + zh)}">'
+            )
+        else:
+            alt += f'<link rel="alternate" hreflang="x-default" href="{esc(canon)}">'
+        nodes = []
+        if home:
+            nodes.append(website_node("Unit Converter", canon, "en", desc))
+            nodes.append(webapp_node("Unit Converter", canon, "en", desc))
+        else:
+            if not crumbs or crumbs[-1]["url"] != path:
+                raise SystemExit(f"面包屑末项必须是当前页: {path}")
+            nodes.append(breadcrumb_node(self.base, crumbs))
+        if howto:
+            nodes.append(howto_node(howto["name"], howto["steps"]))
+        if faq:
+            questions = [q for q, _ in faq]
+            if len(questions) != len(set(questions)):
+                raise SystemExit(f"重复的 FAQ 问题: {path}")
+            nodes.append(faq_node(faq))
         nav = "".join(f'<a href="{self.url(c)}">{name}</a>' for c, (_, name) in CAT_EN.items())
         page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)}</title><meta name="description" content="{esc(desc)}">
-<link rel="canonical" href="{esc(self.base + path)}">{alt}{ads}<style>{CSS}</style></head><body>
+<link rel="canonical" href="{esc(canon)}">{alt}{og_tags(title, desc, canon, "Unit Converter", "en_US")}{jsonld_scripts(nodes)}{ads}<style>{CSS}</style></head><body>
 <header><a class="logo" href="/en/">Unit Converter</a><nav>{nav}<a href="/en/bmi/">BMI</a><a href="{zh or '/'}" hreflang="zh-CN">中文</a></nav></header>
 <main>{body}</main>
 <footer>Conversion factors use exact definitions from the International System of Units (SI) and NIST. Results are rounded to 10 significant digits.</footer>
@@ -217,6 +240,229 @@ y.oninput=function(){{x.value=y.value===''?'':p(G(+y.value))}};x.oninput();}})()
     def values_for(self, c, a, b):
         return self.common.get((c, a, b), [-40, -10, 0, 10, 20, 30, 37, 50, 100] if c == "wendu" else STD)
 
+    def fconv(self, c, a, b, v):
+        return fmt(self.conv(c, a, b, v))
+
+    def base_faq(self, c, a, b):
+        """和原先英文对照页 FAQ 两问的可见文字保持一致。"""
+        one = self.conv(c, a, b, 1)
+        return [
+            (f"How many {UNIT_EN[b][1]} are in a {UNIT_EN[a][0]}?", f"1 {self.n(a, 1)} equals {fmt(one)} {self.n(b, one)}."),
+            (
+                f"How do I convert {UNIT_EN[b][1]} to {UNIT_EN[a][1]}?",
+                f"Use {self.formula(c, b, a)}. For example, 10 {self.sym(b)} = {fmt(self.conv(c, b, a, 10))} {self.sym(a)}.",
+            ),
+        ]
+
+    def key_content(self, c, a, b):
+        """与中文重点页同一组换算的英文说明。其他组合返回 None。"""
+        key = (c, a, b)
+
+        def pack(paragraph, headers, rows, name, steps, faq):
+            return {"html": guide_card("Common uses and values", paragraph, headers, rows), "name": name, "steps": steps, "faq": faq}
+
+        if key == ("zhongliang", "jin", "kg"):
+            para = (
+                f"In Chinese markets, recipes, and spoken body weight, the unit is the jin (catty). "
+                f"Packaged food and clinic scales use kilograms. One market jin is exactly {self.fconv(c, 'jin', 'kg', 1)} kilograms, "
+                f"so divide the number of jin by 2. A kilogram and the Chinese 公斤 are the same unit (kg)."
+            )
+            rows = [
+                ["1 jin of vegetables", "1 jin", f"{self.fconv(c, 'jin', 'kg', 1)} kg"],
+                ["2 jin", "2 jin", f"{self.fconv(c, 'jin', 'kg', 2)} kg"],
+                ["A 10 jin bag of rice", "10 jin", f"{self.fconv(c, 'jin', 'kg', 10)} kg"],
+                ["100 jin", "100 jin", f"{self.fconv(c, 'jin', 'kg', 100)} kg"],
+                ["Spoken weight, 120 jin", "120 jin", f"{self.fconv(c, 'jin', 'kg', 120)} kg"],
+            ]
+            steps = [
+                f"Use the market jin: 1 jin = {self.fconv(c, 'jin', 'kg', 1)} kilograms, and 1 kilogram = {self.fconv(c, 'kg', 'jin', 1)} jin.",
+                f"To convert jin to kilograms, divide by 2. For example, 100 jin = {self.fconv(c, 'jin', 'kg', 100)} kilograms.",
+                f"To convert kilograms back to jin, multiply by 2. For example, 60 kilograms = {self.fconv(c, 'kg', 'jin', 60)} jin.",
+            ]
+            faq = [
+                ("How do I convert jin to kilograms?", f"Divide by 2. 1 jin equals {self.fconv(c, 'jin', 'kg', 1)} kilograms, and 1 kilogram equals {self.fconv(c, 'kg', 'jin', 1)} jin."),
+                ("How many kilograms are in 100 jin?", f"100 jin equals {self.fconv(c, 'jin', 'kg', 100)} kilograms."),
+                ("How many kilograms are in 120 jin?", f"120 jin equals {self.fconv(c, 'jin', 'kg', 120)} kilograms, which is the figure a clinic scale shows."),
+            ]
+            return pack(para, ["Situation", "jin", "kilograms"], rows, "How to convert jin to kilograms", steps, faq)
+        if key == ("zhongliang", "kg", "jin"):
+            para = (
+                f"Clinic reports and packaged food list kilograms. Everyday Chinese still uses jin. "
+                f"One kilogram is exactly {self.fconv(c, 'kg', 'jin', 1)} jin, so multiply kilograms by 2. "
+                f"A weight of 60 kilograms is {self.fconv(c, 'kg', 'jin', 60)} jin."
+            )
+            rows = [
+                ["1 kilogram of fruit", "1 kg", f"{self.fconv(c, 'kg', 'jin', 1)} jin"],
+                ["5 kilograms of rice", "5 kg", f"{self.fconv(c, 'kg', 'jin', 5)} jin"],
+                ["Body weight, 50 kg", "50 kg", f"{self.fconv(c, 'kg', 'jin', 50)} jin"],
+                ["Body weight, 60 kg", "60 kg", f"{self.fconv(c, 'kg', 'jin', 60)} jin"],
+                ["Body weight, 70 kg", "70 kg", f"{self.fconv(c, 'kg', 'jin', 70)} jin"],
+            ]
+            steps = [
+                f"Remember that 1 kilogram = {self.fconv(c, 'kg', 'jin', 1)} jin, and 1 jin = {self.fconv(c, 'jin', 'kg', 1)} kilograms.",
+                f"To convert kilograms to jin, multiply by 2. For example, 50 kilograms = {self.fconv(c, 'kg', 'jin', 50)} jin.",
+                f"To convert jin back to kilograms, divide by 2. For example, 120 jin = {self.fconv(c, 'jin', 'kg', 120)} kilograms.",
+            ]
+            faq = [
+                ("How many jin are in 50 kilograms?", f"50 kilograms equals {self.fconv(c, 'kg', 'jin', 50)} jin."),
+                ("How many jin are in 60 kilograms?", f"60 kilograms equals {self.fconv(c, 'kg', 'jin', 60)} jin."),
+                ("Are a kilogram and a 公斤 the same?", f"Yes. 1 kilogram = 1 公斤 = {self.fconv(c, 'kg', 'jin', 1)} jin, and the symbol is kg."),
+            ]
+            return pack(para, ["Situation", "kilograms", "jin"], rows, "How to convert kilograms to jin", steps, faq)
+        if key == ("mianji", "mu", "m2"):
+            one, fen = self.fconv(c, "mu", "m2", 1), self.fconv(c, "mu", "m2", "0.1")
+            half, three = self.fconv(c, "mu", "m2", "1.5"), self.fconv(c, "mu", "m2", 3)
+            para = (
+                f"Farmland and rural plots in China are often given in mu, while property documents use square meters. "
+                f"One mu is exactly 2000/3 square meters, shown here as {one} square meters and commonly remembered as about 666.67. "
+                f"Two round values: 1.5 mu = {half} square meters, and 3 mu = {three} square meters."
+            )
+            rows = [
+                ["One fen (0.1 mu)", "0.1 mu", f"{fen} m²"],
+                ["One mu", "1 mu", f"{one} m²"],
+                ["1.5 mu", "1.5 mu", f"{half} m²"],
+                ["3 mu", "3 mu", f"{three} m²"],
+            ]
+            steps = [
+                f"Use the market mu: 1 mu = 2000/3 square meters, which is {one} square meters (about 666.67).",
+                f"To convert mu to square meters, multiply by 2000/3. For example, 1.5 mu = {half} square meters, and 3 mu = {three} square meters.",
+                f"To convert square meters back to mu, multiply by 0.0015. For example, 100 square meters = {self.fconv(c, 'm2', 'mu', 100)} mu.",
+            ]
+            faq = [
+                ("How many square meters are in 0.1 mu?", f"0.1 mu, also called one fen, equals {fen} square meters (about 66.67)."),
+                ("How many square meters are in 1.5 mu?", f"1.5 mu equals {half} square meters exactly."),
+                ("How many square meters are in 3 mu?", f"3 mu equals {three} square meters exactly."),
+            ]
+            return pack(para, ["Situation", "mu", "square meters"], rows, "How to convert mu to square meters", steps, faq)
+        if key == ("mianji", "m2", "mu"):
+            one_m = self.fconv(c, "m2", "mu", 1)
+            h100, h1000 = self.fconv(c, "m2", "mu", 100), self.fconv(c, "m2", "mu", 1000)
+            h200, h500 = self.fconv(c, "m2", "mu", 200), self.fconv(c, "m2", "mu", 500)
+            mu_m = self.fconv(c, "mu", "m2", 1)
+            para = (
+                f"Floor plans quote square meters. Multiply by 0.0015 to get mu, because 1 square meter is exactly {one_m} mu. "
+                f"100 square meters = {h100} mu, and 1000 square meters = {h1000} mu, with no rounding."
+            )
+            rows = [
+                ["A 100 m² room", "100 m²", f"{h100} mu"],
+                ["200 m²", "200 m²", f"{h200} mu"],
+                ["500 m²", "500 m²", f"{h500} mu"],
+                ["1000 m²", "1000 m²", f"{h1000} mu"],
+                ["One mu", f"{mu_m} m²", "1 mu"],
+            ]
+            steps = [
+                f"By definition, 1 square meter = {one_m} mu, and 1 mu = {mu_m} square meters.",
+                f"To convert square meters to mu, multiply by 0.0015. For example, 100 square meters = {h100} mu, and 1000 square meters = {h1000} mu.",
+                f"To convert mu back to square meters, multiply by 2000/3. For example, 1 mu = {mu_m} square meters.",
+            ]
+            faq = [
+                ("How many mu are in 100 square meters?", f"100 square meters equals {h100} mu."),
+                ("How many mu are in 1000 square meters?", f"1000 square meters equals {h1000} mu."),
+                ("How do I convert square meters to mu in my head?", f"Multiply the square meters by 0.0015. 1 square meter is {one_m} mu, and 100 square meters is {h100} mu."),
+            ]
+            return pack(para, ["Situation", "square meters", "mu"], rows, "How to convert square meters to mu", steps, faq)
+        if key == ("changdu", "inch", "cm"):
+            para = (
+                f"Screens, clothing sizes, and fasteners are often given in inches. "
+                f"One international inch is exactly {self.fconv(c, 'inch', 'cm', 1)} centimeters, so multiply inches by 2.54. "
+                f"A screen size in inches is the diagonal, not the width or the height."
+            )
+            rows = [
+                ["Definition", "1 in", f"{self.fconv(c, 'inch', 'cm', 1)} cm"],
+                ["6 inch diagonal", "6 in", f"{self.fconv(c, 'inch', 'cm', 6)} cm"],
+                ["24 inch display", "24 in", f"{self.fconv(c, 'inch', 'cm', 24)} cm"],
+                ["27 inch display", "27 in", f"{self.fconv(c, 'inch', 'cm', 27)} cm"],
+                ["32 inch display", "32 in", f"{self.fconv(c, 'inch', 'cm', 32)} cm"],
+            ]
+            steps = [
+                f"Use the international inch: 1 inch = {self.fconv(c, 'inch', 'cm', 1)} centimeters.",
+                f"To convert inches to centimeters, multiply by 2.54. For example, 10 inches = {self.fconv(c, 'inch', 'cm', 10)} centimeters, and 27 inches = {self.fconv(c, 'inch', 'cm', 27)} centimeters. Measure a screen on the diagonal.",
+                f"To convert centimeters back to inches, divide by 2.54. For example, 100 centimeters = {self.fconv(c, 'cm', 'inch', 100)} inches.",
+            ]
+            faq = [
+                ("How do I convert inches to centimeters?", f"Multiply by 2.54. For example, 10 inches = {self.fconv(c, 'inch', 'cm', 10)} centimeters."),
+                ("How many centimeters is 27 inches?", f"27 inches equals {self.fconv(c, 'inch', 'cm', 27)} centimeters. Display sizes are diagonals."),
+                ("How many centimeters is 24 inches?", f"24 inches equals {self.fconv(c, 'inch', 'cm', 24)} centimeters."),
+            ]
+            return pack(para, ["Situation", "inches", "centimeters"], rows, "How to convert inches to centimeters", steps, faq)
+        if key == ("changdu", "cm", "inch"):
+            para = (
+                f"Furniture and height measured in centimeters convert to inches by dividing by 2.54. "
+                f"One centimeter is {self.fconv(c, 'cm', 'inch', 1)} inches. "
+                f"100 centimeters is {self.fconv(c, 'cm', 'inch', 100)} inches."
+            )
+            rows = [
+                ["1 centimeter", "1 cm", f"{self.fconv(c, 'cm', 'inch', 1)} in"],
+                ["10 centimeters", "10 cm", f"{self.fconv(c, 'cm', 'inch', 10)} in"],
+                ["A 30 cm ruler", "30 cm", f"{self.fconv(c, 'cm', 'inch', 30)} in"],
+                ["100 centimeters", "100 cm", f"{self.fconv(c, 'cm', 'inch', 100)} in"],
+                ["Height, 170 cm", "170 cm", f"{self.fconv(c, 'cm', 'inch', 170)} in"],
+            ]
+            steps = [
+                f"1 centimeter = {self.fconv(c, 'cm', 'inch', 1)} inches, because 1 inch = {self.fconv(c, 'inch', 'cm', 1)} centimeters.",
+                f"To convert centimeters to inches, divide by 2.54. For example, 10 centimeters = {self.fconv(c, 'cm', 'inch', 10)} inches, and 100 centimeters = {self.fconv(c, 'cm', 'inch', 100)} inches.",
+                f"To convert inches back to centimeters, multiply by 2.54. For example, 1 inch = {self.fconv(c, 'inch', 'cm', 1)} centimeters.",
+            ]
+            faq = [
+                ("How do I convert centimeters to inches?", f"Divide by 2.54. For example, 10 centimeters = {self.fconv(c, 'cm', 'inch', 10)} inches."),
+                ("How many inches is 100 centimeters?", f"100 centimeters equals {self.fconv(c, 'cm', 'inch', 100)} inches."),
+                ("How many inches is 170 centimeters?", f"170 centimeters equals {self.fconv(c, 'cm', 'inch', 170)} inches."),
+            ]
+            return pack(para, ["Situation", "centimeters", "inches"], rows, "How to convert centimeters to inches", steps, faq)
+        if key == ("wendu", "f", "c"):
+            f2c, c2f = self.formula("wendu", "f", "c"), self.formula("wendu", "c", "f")
+            para = (
+                f"US weather forecasts, some ovens, and body-temperature readings use Fahrenheit. "
+                f"Celsius is not a fixed multiple of Fahrenheit. The formula is {f2c}. "
+                f"Three anchors: 32°F = {self.fconv(c, 'f', 'c', 32)}°C, "
+                f"98.6°F = {self.fconv(c, 'f', 'c', '98.6')}°C, and 212°F = {self.fconv(c, 'f', 'c', 212)}°C."
+            )
+            rows = [
+                ["Freezing point", "32°F", f"{self.fconv(c, 'f', 'c', 32)}°C"],
+                ["Room temperature", "68°F", f"{self.fconv(c, 'f', 'c', 68)}°C"],
+                ["Body temperature", "98.6°F", f"{self.fconv(c, 'f', 'c', '98.6')}°C"],
+                ["Boiling point of water", "212°F", f"{self.fconv(c, 'f', 'c', 212)}°C"],
+                ["Oven, 350°F", "350°F", f"{self.fconv(c, 'f', 'c', 350)}°C"],
+            ]
+            steps = [
+                f"Use {f2c}. Do not multiply Fahrenheit by one fixed factor.",
+                f"Subtract 32, then multiply by 5/9. For example, 68°F = {self.fconv(c, 'f', 'c', 68)}°C, and 98.6°F = {self.fconv(c, 'f', 'c', '98.6')}°C.",
+                f"To convert Celsius back to Fahrenheit, use {c2f}. For example, 0°C = {self.fconv(c, 'c', 'f', 0)}°F, and 100°C = {self.fconv(c, 'c', 'f', 100)}°F.",
+            ]
+            faq = [
+                ("How do I convert Fahrenheit to Celsius?", f"Use {f2c}. For example, 68°F equals {self.fconv(c, 'f', 'c', 68)}°C."),
+                ("What is 98.6 degrees Fahrenheit in Celsius?", f"98.6°F equals {self.fconv(c, 'f', 'c', '98.6')}°C, the usual body-temperature pair."),
+                ("What is 0 degrees Fahrenheit in Celsius?", f"0°F equals {self.fconv(c, 'f', 'c', 0)}°C."),
+            ]
+            return pack(para, ["Situation", "Fahrenheit", "Celsius"], rows, "How to convert Fahrenheit to Celsius", steps, faq)
+        if key == ("wendu", "c", "f"):
+            f2c, c2f = self.formula("wendu", "f", "c"), self.formula("wendu", "c", "f")
+            para = (
+                f"Weather, body temperature, and oven dials outside the United States are often in Celsius. "
+                f"The formula is {c2f}. Anchors: 0°C = {self.fconv(c, 'c', 'f', 0)}°F, "
+                f"37°C = {self.fconv(c, 'c', 'f', 37)}°F, 100°C = {self.fconv(c, 'c', 'f', 100)}°F, "
+                f"and a 180°C oven is {self.fconv(c, 'c', 'f', 180)}°F."
+            )
+            rows = [
+                ["Freezing point", "0°C", f"{self.fconv(c, 'c', 'f', 0)}°F"],
+                ["Room temperature", "20°C", f"{self.fconv(c, 'c', 'f', 20)}°F"],
+                ["Body temperature", "37°C", f"{self.fconv(c, 'c', 'f', 37)}°F"],
+                ["Boiling point of water", "100°C", f"{self.fconv(c, 'c', 'f', 100)}°F"],
+                ["Oven, 180°C", "180°C", f"{self.fconv(c, 'c', 'f', 180)}°F"],
+            ]
+            steps = [
+                f"Use {c2f}.",
+                f"Multiply by 9/5, then add 32. For example, 20°C = {self.fconv(c, 'c', 'f', 20)}°F, and 37°C = {self.fconv(c, 'c', 'f', 37)}°F.",
+                f"To convert Fahrenheit back to Celsius, use {f2c}. For example, 32°F = {self.fconv(c, 'f', 'c', 32)}°C, and 212°F = {self.fconv(c, 'f', 'c', 212)}°C.",
+            ]
+            faq = [
+                ("How do I convert Celsius to Fahrenheit?", f"Use {c2f}. For example, 20°C equals {self.fconv(c, 'c', 'f', 20)}°F."),
+                ("What is 37 degrees Celsius in Fahrenheit?", f"37°C equals {self.fconv(c, 'c', 'f', 37)}°F, the usual body-temperature pair."),
+                ("What is 100 degrees Celsius in Fahrenheit?", f"100°C equals {self.fconv(c, 'c', 'f', 100)}°F, the boiling point of water at standard pressure."),
+            ]
+            return pack(para, ["Situation", "Celsius", "Fahrenheit"], rows, "How to convert Celsius to Fahrenheit", steps, faq)
+        return None
+
     # ----- 页面 -----
     def pair_page(self, c, a, b):
         one, back = self.conv(c, a, b, 1), self.conv(c, b, a, 1)
@@ -228,18 +474,32 @@ y.oninput=function(){{x.value=y.value===''?'':p(G(+y.value))}};x.oninput();}})()
             note = "<p>This converter uses binary units (1 KB = 1024 bytes), as operating systems do. Drive makers use decimal units (1 GB = 1000 MB), which is why a drive shows less space than its label.</p>"
         if c == "tiji" and {"cup", "tbsp", "tsp", "pint", "quart", "usfloz", "usgal"} & {a, b}:
             note += "<p>Cups, spoons, pints, quarts, fluid ounces and gallons here are US customary units. Imperial (UK) gallons are larger: 1 imperial gallon = 4.54609 liters.</p>"
+        extra = self.key_content(c, a, b)
+        faqs = self.base_faq(c, a, b)
+        guide_html, howto_html, howto = "", "", None
+        if extra:
+            faqs = faqs + extra["faq"]
+            guide_html = extra["html"]
+            howto = {"name": extra["name"], "steps": extra["steps"]}
+            howto_html = howto_card(extra["name"], extra["steps"])
+        h1 = f"{A} to {B} ({self.sym(a)} to {self.sym(b)})"
         body = f"""<div class="card"><h1>{A} to {B} ({esc(self.sym(a))} to {esc(self.sym(b))})</h1>
 <div class="big">1 {esc(self.n(a, 1))} = {fmt(one)} {esc(self.n(b, one))}</div>
 <p class="muted">1 {esc(self.n(b, 1))} = {fmt(back)} {esc(self.n(a, back))} · Formula: {esc(self.formula(c, a, b))}</p></div>
-{self.converter(c, a, b)}{self.ad()}
+{guide_html}{self.converter(c, a, b)}{self.ad()}
 <div class="card"><h2>{A} to {B} conversion table</h2>{self.table(c, a, b, self.values_for(c, a, b))}</div>
 <div class="card"><h2>{B} to {A} conversion table</h2>{self.table(c, b, a, self.values_for(c, b, a))}</div>
-<div class="card"><h2>FAQ</h2><p><b>How many {esc(UNIT_EN[b][1])} are in a {esc(UNIT_EN[a][0])}?</b><br>1 {esc(self.n(a, 1))} equals {fmt(one)} {esc(self.n(b, one))}.</p>
-<p><b>How do I convert {esc(UNIT_EN[b][1])} to {esc(UNIT_EN[a][1])}?</b><br>Use {esc(self.formula(c, b, a))}. For example, 10 {esc(self.sym(b))} = {fmt(self.conv(c, b, a, 10))} {esc(self.sym(a))}.</p>{note}</div>
+{howto_html}<div class="card"><h2>FAQ</h2>{faq_html(faqs)}{note}</div>
 <div class="card"><h2>More {CAT_EN[c][1].lower()} conversions</h2><div class="links">{related}</div><p><a href="{self.url(c)}">{CAT_EN[c][1]} converter »</a></p></div>"""
         zh = f"/{c}/{a}-{b}/" if (c, a, b) in self.zh_pairs else None
+        crumbs = [
+            {"name": "Unit Converter", "url": "/en/"},
+            {"name": CAT_EN[c][1], "url": self.url(c)},
+            {"name": h1, "url": self.url(c, a, b)},
+        ]
         self.write(self.url(c, a, b), f"{A} to {B} Converter ({self.sym(a)} to {self.sym(b)})",
-                   f"Convert {UNIT_EN[a][1]} to {UNIT_EN[b][1]}: 1 {self.sym(a)} = {fmt(one)} {self.sym(b)}. Free converter with formula and conversion table.", body, zh)
+                   f"Convert {UNIT_EN[a][1]} to {UNIT_EN[b][1]}: 1 {self.sym(a)} = {fmt(one)} {self.sym(b)}. Free converter with formula and conversion table.",
+                   body, zh, crumbs=crumbs, faq=faqs, howto=howto)
 
     def value_page(self, c, a, b, v):
         r = self.conv(c, a, b, v)
@@ -250,8 +510,18 @@ y.oninput=function(){{x.value=y.value===''?'':p(G(+y.value))}};x.oninput();}})()
 <p class="muted">Calculation: {esc(calc)} · <a href="{self.url(c, a, b)}">{self.title_name(a)} to {self.title_name(b)} converter »</a></p></div>{self.ad()}
 {self.converter(c, a, b, v)}
 <div class="card"><h2>Other values</h2>{self.table(c, a, b, self.common[(c, a, b)])}</div>"""
+        h1 = f"{fmt(v)} {self.n(a, v)} to {UNIT_EN[b][1]}"
+        zh = f"/{c}/{a}-{b}/{fmt(v)}/"
+        if not (OUT / zh.strip("/") / "index.html").exists():
+            zh = None
+        crumbs = [
+            {"name": "Unit Converter", "url": "/en/"},
+            {"name": CAT_EN[c][1], "url": self.url(c)},
+            {"name": f"{self.title_name(a)} to {self.title_name(b)} converter", "url": self.url(c, a, b)},
+            {"name": h1, "url": self.url(c, a, b, v)},
+        ]
         self.write(self.url(c, a, b, v), f"{fmt(v)} {self.n(a, v)} to {UNIT_EN[b][1]} ({fmt(v)} {self.sym(a)} = {fmt(r)} {self.sym(b)})",
-                   f"{fmt(v)} {self.n(a, v)} equals {fmt(r)} {self.n(b, r)}. Calculation: {calc}.", body)
+                   f"{fmt(v)} {self.n(a, v)} equals {fmt(r)} {self.n(b, r)}. Calculation: {calc}.", body, zh, crumbs=crumbs)
 
     def category_page(self, c):
         us = self.units[c]
@@ -269,8 +539,10 @@ ins[0].value=1;ins[0].oninput();})();</script>""".replace("__U__", js_units)
 <div class="form">{inputs}</div>{js}</div>{self.ad()}
 <div class="card"><h2>All {name.lower()} conversions</h2><div class="links">{pairs}</div></div>"""
         names = ", ".join(UNIT_EN[u][1] for u in us[:5])
+        h1 = f"{name} Converter"
+        crumbs = [{"name": "Unit Converter", "url": "/en/"}, {"name": h1, "url": self.url(c)}]
         self.write(self.url(c), f"{name} Converter – Convert {names} and more",
-                   f"Free online {name.lower()} converter for {len(us)} units including {names}.", body, f"/{c}/")
+                   f"Free online {name.lower()} converter for {len(us)} units including {names}.", body, f"/{c}/", crumbs=crumbs)
 
     def bmi_page(self):
         body = """<div class="card"><h1>BMI Calculator</h1><div class="form">
@@ -288,7 +560,8 @@ function met(){var m=+$('cm').value/100,k=+$('kg').value;var i=m/0.0254;$('ft').
 <div class="card"><h2>Adult BMI categories (WHO)</h2><table><tr><th>Category</th><th>BMI</th></tr>
 <tr><td>Underweight</td><td>&lt; 18.5</td></tr><tr><td>Healthy weight</td><td>18.5 – 24.9</td></tr><tr><td>Overweight</td><td>25.0 – 29.9</td></tr><tr><td>Obesity</td><td>≥ 30.0</td></tr></table>
 <p>BMI = weight (kg) ÷ height (m)², or 703 × weight (lb) ÷ height (in)². BMI is a screening measure, not a diagnosis, and does not apply to children, pregnant women or very muscular people.</p></div>""".replace("__AD__", self.ad())
-        self.write("/en/bmi/", "BMI Calculator – Body Mass Index in lb/ft or kg/cm", "Free BMI calculator using feet, inches and pounds or metric units, with WHO adult BMI categories.", body, "/bmi/")
+        crumbs = [{"name": "Unit Converter", "url": "/en/"}, {"name": "BMI Calculator", "url": "/en/bmi/"}]
+        self.write("/en/bmi/", "BMI Calculator – Body Mass Index in lb/ft or kg/cm", "Free BMI calculator using feet, inches and pounds or metric units, with WHO adult BMI categories.", body, "/bmi/", crumbs=crumbs)
 
     def home(self):
         cats = "".join(f'<a href="{self.url(c)}">{name}</a>' for c, (_, name) in CAT_EN.items())
@@ -296,17 +569,24 @@ function met(){var m=+$('cm').value/100,k=+$('kg').value;var i=m/0.0254;$('ft').
         body = f"""<div class="card"><h1>Unit Converter</h1><p class="muted">Convert length, weight, volume, temperature, area, speed, data, pressure, energy and power — {sum(len(u) for u in self.units.values())} units with exact conversion factors.</p>
 <div class="grid">{cats}<a href="/en/bmi/">BMI Calculator</a></div></div>{self.ad()}
 <div class="card"><h2>Popular conversions</h2><div class="links">{popular}</div></div>"""
-        self.write("/en/", "Unit Converter – Free Online Conversion Calculator", "Free online unit converter: inches to cm, kg to lbs, Celsius to Fahrenheit, cups to ml and more, with exact formulas and tables.", body, "/")
+        self.write("/en/", "Unit Converter – Free Online Conversion Calculator", "Free online unit converter: inches to cm, kg to lbs, Celsius to Fahrenheit, cups to ml and more, with exact formulas and tables.", body, "/", home=True)
 
     # ----- 中文页面加上英文对应链接 -----
     def link_chinese(self):
         for en, zh in self.alt.items():
             f = OUT / zh.strip("/") / "index.html"
             s = f.read_text(encoding="utf-8")
-            tags = (f'<link rel="alternate" hreflang="zh-CN" href="{esc(self.base + zh)}">'
-                    f'<link rel="alternate" hreflang="en" href="{esc(self.base + en)}">')
-            s = s.replace("<style>", tags + "<style>", 1)
-            s = s.replace("</nav></header>", f'<a href="{self.prefix}{en}" hreflang="en">English</a></nav></header>', 1)
+            marker = f'<link rel="alternate" hreflang="x-default" href="{esc(self.base + zh)}">'
+            en_tag = f'<link rel="alternate" hreflang="en" href="{esc(self.base + en)}">'
+            if marker not in s:
+                raise SystemExit(f"中文页缺少 x-default,无法互链: {zh}")
+            if en_tag not in s:
+                s = s.replace(marker, marker + en_tag, 1)
+            # 数值页(路径有两级以上)原先没有 English 导航。hreflang 加在 head 里,不往导航新增链接。
+            if zh.strip("/").count("/") < 2:
+                en_nav = f'<a href="{self.prefix}{en}" hreflang="en">English</a>'
+                if en_nav not in s and "</nav></header>" in s:
+                    s = s.replace("</nav></header>", en_nav + "</nav></header>", 1)
             f.write_text(s, encoding="utf-8")
 
     def build(self):
@@ -322,7 +602,10 @@ function met(){var m=+$('cm').value/100,k=+$('kg').value;var i=m/0.0254;$('ft').
         self.bmi_page()
         self.link_chinese()
         sm = OUT / "sitemap.xml"
-        extra = "".join(f"<url><loc>{esc(self.base + u)}</loc></url>" for u in self.urls)
+        lastmod = self.cfg["lastmod"]
+        extra = "".join(
+            f"<url><loc>{esc(self.base + u)}</loc><lastmod>{esc(lastmod)}</lastmod></url>" for u in self.urls
+        )
         sm.write_text(sm.read_text(encoding="utf-8").replace("</urlset>", extra + "</urlset>"), encoding="utf-8")
         print(f"英文页面 {len(self.urls)} 个,其中 {len(self.alt)} 个与中文页面互相关联")
 
